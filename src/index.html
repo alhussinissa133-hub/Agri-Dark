@@ -255,8 +255,9 @@ const rateUse = () => S.rate?.use || 0;
 function priceBase(p, cur, tier) {            // سعر الوحدة الأساسية
   const rate = (S.view === "pos" && S.cart && S.cart.rate) || rateUse(), w = tier === "w";
   let u, s;
-  if (p.price_mode === "SYP") { s = (w && p.price_wholesale_syp) ? p.price_wholesale_syp : p.price_syp; u = rate ? s / rate : 0; }
-  else { u = (w && p.price_wholesale_usd) ? p.price_wholesale_usd : p.price_usd; s = u * rate; }
+  const wk = Math.min(90, Math.max(0, +S.settings.wholesale_pct || 0)), dis = x => w && wk ? x * (1 - wk / 100) : x;   /* خصم الجملة الافتراضي للمواد بلا سعر جملة */
+  if (p.price_mode === "SYP") { s = (w && p.price_wholesale_syp) ? p.price_wholesale_syp : dis(p.price_syp); u = rate ? s / rate : 0; }
+  else { u = (w && p.price_wholesale_usd) ? p.price_wholesale_usd : dis(p.price_usd); s = u * rate; }
   return cur === "USD" ? r2(u) : (S.settings.round_syp === "1" ? Math.round(s) : r2(s));
 }
 const FIXED_CATS = ["سماد ورقي"];
@@ -644,7 +645,7 @@ VIEWS.pos = async main => {
           <div style="flex-basis:100%;order:-1">${unitsOf(i.p).length > 1 ? `<label class="f">بأي وحدة تبيع؟</label><div class="chips">${unitsOf(i.p).map(u => `<button type="button" class="chip2 ${i.unit === u.key ? "on" : ""}" data-uk="${u.key}">${esc(u.label)}</button>`).join("")}</div>` : `<span class="mute small">الوحدة: ${esc(i.p.unit)}</span>`}</div>
           ${isPackKey(i.unit) ? `<div style="width:150px"><label class="f">وزن هذه العبوة (${esc(i.p.unit)})</label><input class="num" data-size inputmode="decimal" value="${i.size || unitF(i.p, i.unit)}"></div>` : ""}
           <div style="flex-basis:100%"><label class="f">نوع السعر لهذه المادة</label><div class="seg" data-tseg><button type="button" data-lt="r" class="${(i.tier || cart.tier) === "r" ? "on" : ""}">مفرق</button><button type="button" data-lt="w" class="${(i.tier || cart.tier) === "w" ? "on" : ""}">جملة</button></div></div>
-          <div class="grow"><label class="f">السعر (${cart.cur === "USD" ? "$" : "ل.س"})</label><input class="num" data-price inputmode="decimal" value="${i.price}"></div>
+          <div class="grow"><label class="f">السعر (${cart.cur === "USD" ? "$" : "ل.س"})</label><input class="num" data-price inputmode="decimal" value="${i.price}">${(i.tier || cart.tier) === "w" && !(i.p.price_mode === "SYP" ? i.p.price_wholesale_syp : i.p.price_wholesale_usd) && !(+S.settings.wholesale_pct > 0) ? `<small class="warn-t">لا يوجد سعر جملة لهذه المادة فيبقى سعر المفرق. حدّده من الأصناف أو ضع «خصم الجملة الافتراضي %» من الإعدادات</small>` : ""}</div>
           <div style="width:150px"><label class="f">خصم على المادة</label><div class="row" style="gap:4px"><input class="num" data-dv inputmode="decimal" value="${i.dv || ""}" style="min-width:0"><select data-dm style="width:78px;padding-inline:6px"><option value="$" ${i.dm !== "%" ? "selected" : ""}>${cart.cur === "USD" ? "$" : "ل.س"}</option><option value="%" ${i.dm === "%" ? "selected" : ""}>%</option></select></div></div>
           <div style="min-width:90px;text-align:left" class="num"><label class="f">المجموع</label><b data-lt-tot>${money(lineTot(i), cart.cur)}</b></div>
         </div></div>`).join("");
@@ -806,7 +807,7 @@ VIEWS.products = async main => {
   const draw = () => {
     const w = norm(q).split(" ").filter(Boolean);
     const list = S.products.filter(p => (!cat || p.category === cat) && w.every(x => norm(p.name + " " + (p.active_ingredient || "") + " " + (p.company || "") + " " + (p.barcode || "")).includes(x))).slice(0, 150);
-    $("#list", main).innerHTML = list.map(p => `<div class="item" data-id="${p.id}"><div class="grow"><b>${esc(p.name)}</b><br><small class="mute">${esc(p.category || "")}${p.company ? " · " + esc(p.company) : ""}</small></div>
+    $("#list", main).innerHTML = list.map(p => `<div class="item" data-id="${p.id}"><div class="grow"><b>${esc(p.name)}</b><br><small class="mute">${p.cap > 0 ? `${esc(p.unit)} ${p.cap} ${esc(p.cap_unit)} · ` : ""}${esc(p.category || "")}${p.company ? " · " + esc(p.company) : ""}</small></div>
       <div class="num" style="text-align:left">${p.price_mode === "SYP" ? syp(p.price_syp) : (p.price_usd ? usd(p.price_usd) : '<span class="warn-t small">بلا سعر</span>')}<br><small class="${p.min_stock > 0 && p.stock <= p.min_stock ? "bad-t" : "mute"}">${stockText(p)}</small>${p.next_expiry ? `<br><small class="mute">صلاحية ${esc(p.next_expiry)}</small>` : ""}</div></div>`).join("") || `<div class="mute" style="padding:12px">لا نتائج</div>`;
     $$(".item", main).forEach(e => e.onclick = () => productForm(S.products.find(p => p.id == e.dataset.id), () => go("products")));
   };
@@ -824,7 +825,11 @@ function productForm(p, done) {
   <div class="grid g2">${f("category", "التصنيف", p.category, 'list="cats"')}<datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join("")}</datalist>${f("company", "الشركة", p.company)}</div>
   ${f("active_ingredient", "المادة الفعّالة / التركيب", p.active_ingredient)}
   <div class="grid g2">${f("barcode", "باركود", p.barcode)}${f("code", "رمز داخلي", p.code)}</div>
-  <div class="grid g3"><div class="field"><label class="f">وحدة البيع الأساسية</label><select id="unit">${(() => { const L = PharmaEngine.UNIT_NAMES.filter(n => !["ليتر", "كغم", "كلغ", "كيلو", "غرام", "غم", "م"].includes(n)).concat(["قطعة", "علبة", "كيس", "لفة", "عبوة", "كرتونة"]); const cur = p.unit || "قطعة"; if (!L.includes(cur)) L.push(cur); return L.map(n => `<option ${n === cur ? "selected" : ""}>${esc(n)}</option>`).join(""); })()}</select><div class="small mute">إن اخترت «لتر» تظهر تلقائياً عند البيع: نص لتر، ربع لتر، 100 مل، مل (وكذلك للكيلو والمتر).</div></div>${f("pack_unit", "اسم العبوة الكبرى", p.pack_unit, 'placeholder="كرتونة / كيس 50 كغ"')}${f("pack_factor", "كم وحدة بالعبوة", p.pack_factor, 'class="num" inputmode="decimal"')}</div>
+  <div class="card" style="margin:6px 0 10px;border-color:var(--brand)"><b>📦 سعة العبوة</b><div class="small mute" style="margin:2px 0 8px">يصلح لأي وحدة: عبوة 250 مل، ظرف 50 غ، لفة 50 متر، علبة 10 حبة… اكتب سعة العبوة ووحدتها (تقدر تكتب أي وحدة). عندها السعر والمخزون والشراء يكونون <b>بالعبوة</b>، والتجزئة (مثلاً 50 مل من عبوة 250 مل) تتم وقت البيع وبيُحسب سعرها تلقائياً. اتركها فارغة للأصناف العادية.</div>
+    <div class="grid g2"><div class="field"><label class="f">سعة العبوة</label><input id="cap" class="num" inputmode="decimal" value="${p.cap > 0 ? p.cap : ""}" placeholder="مثال: 250"></div>
+    <div class="field"><label class="f">وحدة السعة</label><input id="cap_unit" list="capus" value="${esc(p.cap_unit || "")}" placeholder="مل / غ / متر / حبة …"><datalist id="capus">${["مل", "لتر", "غ", "كغ", "متر", "سم", "حبة", "قطعة", "ورقة", "شتلة", "ظرف", "علبة"].map(u => `<option value="${u}">`).join("")}</datalist></div></div></div>
+  ${f("parts", "أحجام التجزئة التي تظهر عند البيع (حدّدها أنت)", p.parts, 'placeholder="مثال: 100, 50, 25  (بنفس وحدة السعة) أو 250 مل, 1 لتر"')}<div class="small mute" style="margin:-4px 0 10px">اتركها فارغة ليضع البرنامج أحجاماً جاهزة. وتعمل أيضاً للأصناف بلا سعة (مثلاً صنف بالكيلو: 500, 250 غ).</div>
+  <div class="grid g3"><div class="field"><label class="f">وحدة البيع الأساسية</label><select id="unit">${(() => { const L = PharmaEngine.UNIT_NAMES.filter(n => !["ليتر", "كغم", "كلغ", "كيلو", "غرام", "غم", "م"].includes(n)).concat(["قطعة", "علبة", "كيس", "لفة", "عبوة", "ظرف", "كرتونة"]); const cur = p.unit || "قطعة"; if (!L.includes(cur)) L.push(cur); return L.map(n => `<option ${n === cur ? "selected" : ""}>${esc(n)}</option>`).join(""); })()}</select><div class="small mute">إن اخترت «لتر» تظهر تلقائياً عند البيع: نص لتر، ربع لتر، 100 مل، مل (وكذلك للكيلو والمتر).</div></div>${f("pack_unit", "اسم العبوة الكبرى", p.pack_unit, 'placeholder="كرتونة / كيس 50 كغ"')}${f("pack_factor", "كم وحدة بالعبوة", p.pack_factor, 'class="num" inputmode="decimal"')}</div>
   ${f("packs", "أحجام عبوات أخرى للنفس الصنف (اختياري)", p.packs, 'placeholder="مثال: 10, 50  (يعني كيس 10 كغ وكيس 50 كغ)"')}
   <div class="card" style="margin:6px 0 12px"><h3>التسعير</h3>
     <div class="field"><label class="f">طريقة التسعير</label><select id="price_mode"><option value="USD" ${p.price_mode === "USD" ? "selected" : ""}>بالدولار (يتحوّل تلقائياً للسعر الجاري)</option><option value="SYP" ${p.price_mode === "SYP" ? "selected" : ""}>سعر ثابت بالليرة</option></select></div>
@@ -840,11 +845,15 @@ function productForm(p, done) {
     wide: true,
     onMount: (b, close) => {
       const sw = () => { if (!owner) return; const m = $("#price_mode", b).value; $("#pUSD", b).classList.toggle("hidden", m !== "USD"); $("#pSYP", b).classList.toggle("hidden", m !== "SYP"); };
-      if (owner) { $("#price_mode", b).onchange = sw; sw(); }
+      if (owner) { $("#price_mode", b).onchange = sw; sw();
+        const lab = () => { const on = +NORM($("#cap", b).value) > 0 && $("#cap_unit", b).value; $$("#pUSD label.f, #pSYP label.f", b).forEach((l, i) => l.textContent = (i % 2 ? "جملة" : "مفرق") + (l.closest("#pUSD") ? " $" : " ل.س") + (on ? " (للعبوة)" : i % 2 ? "" : " (للوحدة الأساسية)")); const u = $("#unit", b), m = ["لتر", "ليتر", "مل", "كغ", "كغم", "كلغ", "كيلو", "غ", "غرام", "غم", "متر", "م", "سم"]; const cu = $("#cap_unit", b).value.trim(), fam = ["مل", "لتر", "ليتر"].includes(cu) ? "عبوة" : ["غ", "كغ", "غرام", "غم", "كغم", "كلغ", "كيلو"].includes(cu) ? "ظرف" : ["متر", "م", "سم"].includes(cu) ? "لفة" : "علبة"; if (on && (m.includes(u.value) || ["قطعة"].includes(u.value))) u.value = fam; };
+        $("#cap", b).oninput = lab; $("#cap_unit", b).onchange = lab; $("#cap_unit", b).oninput = lab; lab(); }
       const bt = $("#bt", b); if (bt) bt.onclick = () => batchesModal(p);
       if (!owner) return;
       $("#sv", b).onclick = guard(async () => {
-        const body = {}; ["name", "category", "company", "active_ingredient", "barcode", "code", "unit", "pack_unit", "pack_factor", "price_mode", "price_usd", "price_wholesale_usd", "price_syp", "price_wholesale_syp", "min_stock", "notes", "packs"].forEach(k => body[k] = $("#" + k, b).value);
+        const body = {}; ["name", "category", "company", "active_ingredient", "barcode", "code", "unit", "pack_unit", "pack_factor", "price_mode", "price_usd", "price_wholesale_usd", "price_syp", "price_wholesale_syp", "min_stock", "notes", "packs", "cap", "cap_unit", "parts"].forEach(k => body[k] = $("#" + k, b).value);
+        if (!(+NORM(body.cap) > 0) || !body.cap_unit) { body.cap = 0; body.cap_unit = ""; } else body.cap = +NORM(body.cap);
+        if (!isNew && p.stock > 0 && body.unit !== p.unit && (+body.cap > 0) !== (+p.cap > 0) && !(await confirmBox(`المخزون الحالي (${num(p.stock)} ${p.unit}) سيُعتبر بوحدة «${body.unit}». هل الكمية الحالية صحيحة بهذه الوحدة؟ (بعد الحفظ يمكنك تعديلها بالجرد)`, "متابعة"))) return;
         if (!(+body.pack_factor > 1)) { body.pack_factor = 1; body.pack_unit = ""; }
         if (isNew) await api("products", { method: "POST", body }); else await api("products/" + p.id, { method: "PUT", body });
         toast("تم الحفظ"); close(); done && done();
@@ -1117,7 +1126,8 @@ VIEWS.settings = async main => {
    <div class="grid g2" style="margin-top:10px"><div class="field"><label class="f">السعر المعتمد للتسعير</label><select id="basis"><option value="sell" ${st.rate_basis === "sell" ? "selected" : ""}>سعر المبيع (موصى به)</option><option value="buy" ${st.rate_basis === "buy" ? "selected" : ""}>سعر الشراء</option></select></div>
    <div class="field"><label class="f">التحديث التلقائي من الليرة اليوم</label><select id="auto"><option value="1" ${st.auto_rate === "1" ? "selected" : ""}>مفعّل</option><option value="0" ${st.auto_rate === "0" ? "selected" : ""}>متوقف (يدوي فقط)</option></select></div>
    <div class="field"><label class="f">كل كم دقيقة</label><input id="int" class="num" inputmode="numeric" value="${esc(st.rate_interval_min)}"></div>
-   <div class="field"><label class="f">تقريب أسعار الليرة لعدد صحيح</label><select id="rnd"><option value="1" ${st.round_syp === "1" ? "selected" : ""}>نعم</option><option value="0" ${st.round_syp === "0" ? "selected" : ""}>لا</option></select></div></div></div>
+   <div class="field"><label class="f">تقريب أسعار الليرة لعدد صحيح</label><select id="rnd"><option value="1" ${st.round_syp === "1" ? "selected" : ""}>نعم</option><option value="0" ${st.round_syp === "0" ? "selected" : ""}>لا</option></select></div>
+   <div class="field"><label class="f">خصم الجملة الافتراضي % (للمواد التي لم تحدد لها سعر جملة)</label><input id="wpct" class="num" inputmode="decimal" value="${esc(st.wholesale_pct || 0)}"><div class="small mute">مثلاً 10 يعني سعر الجملة = المفرق ناقص 10%. إن حدّدت «جملة» داخل الصنف يُستخدم سعره هو.</div></div></div></div>
   <div class="card" style="margin-top:12px"><h3>المتجر</h3><div class="grid g2"><div class="field"><label class="f">اسم الصيدلية (يظهر بالفاتورة)</label><input id="shop" value="${esc(st.shop_name)}"></div>
    <div class="field"><label class="f">تنبيه الصلاحية قبل (يوم)</label><input id="exd" class="num" inputmode="numeric" value="${esc(st.expiry_warn_days)}"></div>
    <div class="field"><label class="f">السماح بالبيع إن لم تتوفر الكمية بالمخزون</label><select id="neg"><option value="1" ${st.allow_negative_stock === "1" ? "selected" : ""}>نعم</option><option value="0" ${st.allow_negative_stock === "0" ? "selected" : ""}>لا</option></select></div></div>
@@ -1141,13 +1151,22 @@ VIEWS.settings = async main => {
   <div class="card" style="margin-top:12px"><h3>الأمان والنسخ الاحتياطي</h3><div class="row wrap"><button class="sec" id="cp">تغيير رمزي</button><button class="sec" id="bk">⬇ تنزيل نسخة احتياطية</button></div>
    <div class="row wrap" style="margin-top:8px"><button class="sec" id="rs">⬆ استرجاع نسخة</button></div><p class="small mute">البيانات محفوظة على هذا الجهاز. احتفظ بنسخة احتياطية خارج الجهاز بين فترة وأخرى (وربط جهاز ثانٍ نسخة احتياطية تلقائية أيضاً).</p></div>`;
   $("#rt", main).onclick = rateModal;
-  $("#svs", main).onclick = guard(async () => { S.settings = await api("settings", { method: "POST", body: { rate_basis: $("#basis", main).value, auto_rate: $("#auto", main).value, rate_interval_min: $("#int", main).value, round_syp: $("#rnd", main).value, shop_name: $("#shop", main).value, expiry_warn_days: $("#exd", main).value, allow_negative_stock: $("#neg", main).value } }); S.rate = await api("rate"); drawRate(); toast("تم الحفظ"); });
+  $("#svs", main).onclick = guard(async () => { S.settings = await api("settings", { method: "POST", body: { rate_basis: $("#basis", main).value, auto_rate: $("#auto", main).value, rate_interval_min: $("#int", main).value, round_syp: $("#rnd", main).value, wholesale_pct: $("#wpct", main).value.replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d)), shop_name: $("#shop", main).value, expiry_warn_days: $("#exd", main).value, allow_negative_stock: $("#neg", main).value } }); S.rate = await api("rate"); drawRate(); toast("تم الحفظ"); });
   $("#bp", main).onclick = guard(async () => { const p = +$("#pct", main).value; if (!p) return; if (await confirmBox(`تغيير كل أسعار الدولار بنسبة ${p}% ؟`)) { await api("products/bulk_prices", { method: "POST", body: { percent: p } }); toast("تم"); } });
   $("#nu", main).onclick = () => userForm(null);
   $("#rc", main).onclick = () => modal("رمز استعادة جديد", `<p class="small mute">أدخل رمزك الحالي للتأكيد.</p><div class="field"><input id="p" type="password" inputmode="numeric" class="num"></div><button id="s" style="width:100%">إنشاء</button>`, { onMount: (b, c) => { $("#s", b).onclick = guard(async () => { const r = await api("me/recovery", { method: "POST", body: { pin: $("#p", b).value } }); S.user.has_recovery = true; c(); showRecoveryCode(r.recovery_code); }); } });
   $$(".item[data-id]", main).forEach(e => e.onclick = () => userForm(users.find(u => u.id == e.dataset.id)));
   $("#cp", main).onclick = () => modal("تغيير الرمز", `<div class="field"><label class="f">الحالي</label><input id="o" type="password" inputmode="numeric" class="num"></div><div class="field"><label class="f">الجديد</label><input id="n" type="password" inputmode="numeric" class="num"></div><button id="s" style="width:100%">حفظ</button>`, { onMount: (b, c) => { $("#s", b).onclick = guard(async () => { await api("me/pin", { method: "POST", body: { old_pin: $("#o", b).value, new_pin: $("#n", b).value } }); toast("تم"); c(); }); } });
-  $("#bk", main).onclick = guard(async () => { const d = await api("backup"), bl = new Blob([JSON.stringify(d)], { type: "application/json" }), a = document.createElement("a"); a.href = URL.createObjectURL(bl); a.download = `pharmacy-${todayStr()}.json`; document.body.appendChild(a); a.click(); a.remove(); toast("تم إنشاء ملف النسخة"); });
+  $("#bk", main).onclick = guard(async () => {
+    const d = await api("backup"), text = JSON.stringify(d), name = `pharmacy-${todayStr()}.json`, H = window.agriHost, P = window.Capacitor && window.Capacitor.Plugins;
+    if (H && H.saveFile) { const r = await H.saveFile(text, name); return toast(r.canceled ? "أُلغي الحفظ" : "تم حفظ النسخة في: " + r.path); }          /* الكمبيوتر: نافذة اختيار المكان */
+    if (P && P.Filesystem && P.Share) {                                                                                                          /* الموبايل: قائمة المشاركة (ملفات / Drive / واتساب...) لاختيار المكان */
+      const w = await P.Filesystem.writeFile({ path: name, data: text, directory: "CACHE", encoding: "utf8" });
+      try { await P.Share.share({ title: "نسخة احتياطية للصيدلية", url: w.uri, dialogTitle: "اختر مكان حفظ النسخة" }); toast("اختر «حفظ في الملفات» أو Drive أو أرسلها لنفسك"); } catch (e) { toast("أُلغي الحفظ"); }
+      return;
+    }
+    const bl = new Blob([text], { type: "application/json" }), a = document.createElement("a"); a.href = URL.createObjectURL(bl); a.download = name; document.body.appendChild(a); a.click(); a.remove(); toast("تم إنشاء ملف النسخة");
+  });
   $("#rs", main).onclick = () => { const f = document.createElement("input"); f.type = "file"; f.accept = ".json,application/json"; f.onchange = guard(async () => { const t = await f.files[0].text(); let j; try { j = JSON.parse(t); } catch { throw new Error("ملف غير صالح"); } if (!(await confirmBox("سيتم دمج بيانات الملف مع بيانات هذا الجهاز. متابعة؟"))) return; const r = await api("backup/restore", { method: "POST", body: j }); toast("تمت إضافة " + r.added + " عملية"); go("settings"); }); f.click(); };
   bindSync(main, info); bindUpdates(main); bindYear(main);
 };

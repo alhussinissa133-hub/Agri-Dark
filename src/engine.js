@@ -12,7 +12,7 @@
   /* ------------------------------ أدوات عامة ------------------------------ */
   const DEFAULTS = {
     shop_name: "الصيدلية الزراعية", rate_basis: "sell", auto_rate: "1", rate_interval_min: "30",
-    allow_negative_stock: "1", expiry_warn_days: "90", round_syp: "1"
+    allow_negative_stock: "1", expiry_warn_days: "90", round_syp: "1", wholesale_pct: "0"
   };
   const SEED_SALT = "7365656453616c7431323334";           // ملح ثابت للرمز الافتراضي حتى يتطابق على كل الأجهزة
   const RC_ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -99,8 +99,8 @@
     };
   }
   const PDEF = { unit: "قطعة", pack_factor: 1, price_mode: "USD", price_usd: 0, price_wholesale_usd: 0, price_syp: 0, price_wholesale_syp: 0, cost_usd: 0, min_stock: 0, active: 1 };
-  const PFIELDS = ["code", "barcode", "name", "category", "company", "active_ingredient", "unit", "pack_unit", "pack_factor", "price_mode", "price_usd", "price_wholesale_usd", "price_syp", "price_wholesale_syp", "min_stock", "notes", "active", "packs"];
-  const PNUM = new Set(["pack_factor", "price_usd", "price_wholesale_usd", "price_syp", "price_wholesale_syp", "min_stock", "active"]);
+  const PFIELDS = ["code", "barcode", "name", "category", "company", "active_ingredient", "unit", "cap", "cap_unit", "parts", "pack_unit", "pack_factor", "price_mode", "price_usd", "price_wholesale_usd", "price_syp", "price_wholesale_syp", "min_stock", "notes", "active", "packs"];
+  const PNUM = new Set(["cap", "pack_factor", "price_usd", "price_wholesale_usd", "price_syp", "price_wholesale_syp", "min_stock", "active"]);
   const CFIELDS = ["name", "phone", "village", "type", "credit_limit_usd", "notes", "active"];
 
   const stockOf = (S, pid) => r3((S.batchesByProduct.get(pid) || []).reduce((a, b) => a + b.qtyRemaining, 0) - (S.oversold.get(pid) || 0));
@@ -129,7 +129,7 @@
       const allocs = allocFefo(S, it.productId, it.base); let given = 0;
       allocs.forEach(([bid, q, c], i) => {
         const frac = q / it.base, lt = i === allocs.length - 1 ? r2(it.line - given) : r2(it.line * frac); given += lt;
-        rows.push({ productId: it.productId, batchId: bid, unit: it.unit, size: it.size, qtyUnit: r3(it.qty * frac), qtyBase: r3(q), price: it.price, lineTotal: lt, costUsd: r2(c * q) });
+        rows.push({ productId: it.productId, batchId: bid, unit: it.unit, ulabel: it.ulabel, size: it.size, qtyUnit: r3(it.qty * frac), qtyBase: r3(q), price: it.price, lineTotal: lt, costUsd: r2(c * q) });
         cost += c * q;
         if (bid) { const b = S.batches.get(bid); b.qtyRemaining = r3(b.qtyRemaining - q); }
         else S.oversold.set(it.productId, r3((S.oversold.get(it.productId) || 0) + q));
@@ -841,7 +841,7 @@
         const sz = isPackKey(uo.key) && +it.size > 0 ? +it.size : 0, base = qty * (sz || uo.f), gross = r2(price * qty), ld = Math.min(gross, Math.max(0, +it.disc || 0)), line = r2(gross - ld);
         need.set(p.id, (need.get(p.id) || 0) + base);
         if (!allowNeg && stockOf(S, p.id) + (edit ? edit.items.filter(x => x.productId === p.id).reduce((a, x) => a + x.qtyBase, 0) : 0) < need.get(p.id) - 1e-9) throw bad(`الكمية غير كافية للصنف «${p.name}»`);
-        lines.push({ productId: p.id, qty, unit, size: sz || undefined, price, base: Math.round(base * 1e6) / 1e6, line, disc: ld || undefined }); subtotal += line;
+        lines.push({ productId: p.id, qty, unit, ulabel: isPackKey(unit) ? undefined : uo.label, size: sz || undefined, price, base: Math.round(base * 1e6) / 1e6, line, disc: ld || undefined }); subtotal += line;
       }
       const discount = Math.max(0, +d.discount || 0), total = r2(Math.max(0, subtotal - discount));
       let paid = d.paid == null ? total : Math.max(0, Math.min(+d.paid, total)), payParts; if (d.pay) { const pf = payFrom(d.pay, cur, rate, total); paid = pf.paid; payParts = pf.parts; } const remaining = r2(total - paid);
@@ -855,8 +855,8 @@
     _saleDetail(id) {
       const S = this.S, s = S.sales.get(id); if (!s) throw new ApiError(404, "الفاتورة غير موجودة");
       const c = s.customerId ? S.customers.get(s.customerId) : null, u = S.users.get(s.userId), groups = new Map();
-      for (const it of s.items) { const k = it.productId + "|" + it.unit + "|" + it.price + "|" + (it.size || ""); const g = groups.get(k) || { product_id: it.productId, sold_unit: it.unit, size: it.size || null, price: it.price, qty_unit: 0, line_total: 0 }; g.qty_unit = r3(g.qty_unit + it.qtyUnit); g.line_total = r2(g.line_total + it.lineTotal); g.disc = r2(g.price * g.qty_unit - g.line_total); groups.set(k, g); }
-      const items = [...groups.values()].map(g => { const p = S.products.get(g.product_id) || {}; return Object.assign(g, { name: p.name, unit: p.unit, pack_unit: p.pack_unit, unit_label: p.unit ? (g.size ? String(p.pack_unit || "كيس").split(" ")[0] + " " + g.size + " " + p.unit : unitOf(p, g.sold_unit).label) : "" }); });
+      for (const it of s.items) { const k = it.productId + "|" + it.unit + "|" + it.price + "|" + (it.size || ""); const g = groups.get(k) || { product_id: it.productId, sold_unit: it.unit, ulabel: it.ulabel, size: it.size || null, price: it.price, qty_unit: 0, line_total: 0 }; g.qty_unit = r3(g.qty_unit + it.qtyUnit); g.line_total = r2(g.line_total + it.lineTotal); g.disc = r2(g.price * g.qty_unit - g.line_total); groups.set(k, g); }
+      const items = [...groups.values()].map(g => { const p = S.products.get(g.product_id) || {}; return Object.assign(g, { name: p.name, unit: p.unit, pack_unit: p.pack_unit, unit_label: g.ulabel ? g.ulabel : p.unit ? (g.size ? String(p.pack_unit || "كيس").split(" ")[0] + " " + g.size + " " + p.unit : unitOf(p, g.sold_unit).label) : "" }); });
       return { id: s.id, number: s.number, ts: s.ts, customer_id: s.customerId, customer_name: c ? c.name : null, user_name: u ? u.name : null, currency: s.currency, rate: s.rate, subtotal: s.subtotal, discount: s.discount, total: s.total, paid: s.paid, pay_parts: s.payParts || null, total_usd: s.totalUsd, cost_usd: s.costUsd, note: s.note, voided: s.voided, archived: s.archived ? 1 : 0, edited: s.editedFrom ? 1 : 0, items, remaining: r2(s.total - s.paid) };
     }
     _range(q, full) { const f = (q.from || (full ? "0000-01-01" : this.today())), t = (q.to || (full ? "9999-12-31" : this.today())); return [f + " 00:00:00", t + " 23:59:59"]; }
@@ -982,9 +982,33 @@
   /* ---------- وحدات البيع (لتر/نص لتر/مل، كغ/غ، متر/سم) ---------- */
   const UNAME = { "لتر": ["vol", 1000], "ليتر": ["vol", 1000], "مل": ["vol", 1], "كغ": ["mass", 1000], "كغم": ["mass", 1000], "كلغ": ["mass", 1000], "كيلو": ["mass", 1000], "غ": ["mass", 1], "غرام": ["mass", 1], "غم": ["mass", 1], "متر": ["len", 100], "م": ["len", 100], "سم": ["len", 1] };
   const UPRE = { vol: [["لتر", 1000], ["نص لتر", 500], ["ربع لتر", 250], ["100 مل", 100], ["مل", 1]], mass: [["كغ", 1000], ["نص كغ", 500], ["ربع كغ", 250], ["100 غ", 100], ["غ", 1]], len: [["متر", 100], ["نص متر", 50], ["سم", 1]] };
+  const CAPAMT = { vol: [1000, 500, 250, 100, 50, 25, 10, 5, 1], mass: [1000, 500, 250, 100, 50, 25, 10, 5, 1], len: [100, 50, 25, 10, 5, 1] }, CAPBASE = { vol: "مل", mass: "غ", len: "سم" }, CAPBIG = { vol: "لتر", mass: "كغ", len: "متر" };
+  /* أحجام التجزئة التي يحددها المستخدم: "100, 50, 25" (بوحدة السعة) أو "250 مل, 1 لتر" بوحدة من نفس العائلة */
+  function customParts(parts, cap, cuName) {
+    const cu = UNAME[cuName], out = [], seen = new Set();
+    for (const tok of String(parts || "").split(/[,،;\n]+/)) {
+      const m = normDigits(tok.trim()).match(/^([0-9]*\.?[0-9]+)\s*(.*)$/); if (!m) continue;
+      const amt = parseFloat(m[1]), un = m[2].trim() || cuName; let f = 0;
+      if (un === cuName) f = amt / cap; else if (cu && UNAME[un] && UNAME[un][0] === cu[0]) f = amt * UNAME[un][1] / (cap * cu[1]);
+      if (!(f >= 0.0005 && f < 1 - 1e-9)) continue;
+      const key = "u" + f.toFixed(6); if (seen.has(key)) continue; seen.add(key); out.push({ key, label: `${amt} ${un}`, f });
+    }
+    return out.sort((a, b) => b.f - a.f);
+  }
   function unitsFor(p) {
+    const cap = +p.cap > 0 ? +p.cap : 0, cuName = String(p.cap_unit || "").trim(), cu = UNAME[cuName];
+    /* وحدة معرَّفة بسعة (عبوة 250 مل / ظرف 50 غ / علبة 10 حبة / لفة 50 متر): الوحدة الأساسية هي العبوة نفسها، والتجزئة أجزاء منها */
+    if (cap && cuName) {
+      const out = [{ key: "base", label: `${p.unit || "عبوة"} ${cap} ${cuName}`, f: 1 }];
+      if (String(p.parts || "").trim()) out.push(...customParts(p.parts, cap, cuName));
+      else if (cu) { const total = cap * cu[1]; for (const a of CAPAMT[cu[0]]) { const f = a / total; if (f < 1 - 1e-9 && f >= 0.001) out.push({ key: "u" + a, label: a === 1 ? CAPBASE[cu[0]] : a === CAPAMT[cu[0]][0] ? CAPBIG[cu[0]] : `${a} ${CAPBASE[cu[0]]}`, f }); } }
+      else if (cap > 1) out.push({ key: "u1", label: cuName, f: 1 / cap });                     // أي وحدة أخرى (حبة، ورقة، قطعة...): تباع مفردة
+      if (p.pack_unit) out.push({ key: "pack", label: p.pack_unit, f: p.pack_factor || 1 });
+      return out;
+    }
     const out = [{ key: "base", label: p.unit || "قطعة", f: 1 }], b = UNAME[String(p.unit || "").trim()];
-    if (b) for (const [label, amt] of UPRE[b[0]]) if (amt !== b[1]) out.push({ key: "u" + amt, label, f: amt / b[1] });
+    if (b && String(p.parts || "").trim()) out.push(...customParts(p.parts, 1, String(p.unit).trim()));
+    else if (b) for (const [label, amt] of UPRE[b[0]]) if (amt !== b[1]) out.push({ key: "u" + amt, label, f: amt / b[1] });
     if (p.pack_unit) {
       out.push({ key: "pack", label: p.pack_unit, f: p.pack_factor || 1 });
       const word = String(p.pack_unit).split(" ")[0], seen = new Set([p.pack_factor || 1]);
